@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Admin Panel</title>
+<style>
+body {
+  font-family: Arial, sans-serif;
+  background: #0f172a;
+  color: white;
+  margin: 0;
+  padding: 30px;
+}
+h1 { margin-bottom: 20px; }
+button {
+  background: #3b82f6;
+  border: none;
+  padding: 10px 18px;
+  color: white;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: 0.2s;
+}
+button:hover { background: #2563eb; }
+.container {
+  background: #1e293b;
+  padding: 20px;
+  border-radius: 12px;
+  margin-top: 20px;
+}
+.key-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #334155;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 10px;
+}
+.used { color: #ef4444; font-weight: bold; }
+.unused { color: #22c55e; font-weight: bold; }
+</style>
+</head>
+
+<body>
+
+<h1>Admin Panel</h1>
+
+<button onclick="createKey()">Yeni Key Oluştur</button>
+
+<div class="container">
+  <h2>Key Listesi</h2>
+  <div id="keyList"></div>
+</div>
+
+<script>
+async function createKey() {
+  await fetch("/admin/create-key", { method: "POST" });
+  loadKeys();
+}
+
+async function loadKeys() {
+  const res = await fetch("/admin/keys");
+  const data = await res.json();
+
+  const list = document.getElementById("keyList");
+  list.innerHTML = "";
+
+  data.forEach(k => {
+    const active = k.usesLeft > 0;
+    list.innerHTML += `
+      <div class="key-item">
+        <div>
+          ${k.key} -
+          <span class="${active ? 'unused' : 'used'}">
+            ${active ? `Aktif (${k.usesLeft} hak)` : "Bitti"}
+          </span>
+        </div>
+        <button onclick="deleteKey('${k._id}')">Sil</button>
+      </div>
+    `;
+  });
+}
+
+async function deleteKey(id) {
+  await fetch("/admin/delete/" + id, { method: "DELETE" });
+  loadKeys();
+}
+
+loadKeys();
+</script>
+
+</body>
+</html>

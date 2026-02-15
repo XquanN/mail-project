@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Platform Seç</title>
+
+<style>
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: linear-gradient(135deg, #0f172a, #1e293b);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  color: white;
+}
+.container {
+  background: #1e293b;
+  padding: 40px;
+  border-radius: 16px;
+  width: 350px;
+  text-align: center;
+  box-shadow: 0 0 30px rgba(0,0,0,0.4);
+}
+button {
+  background: #3b82f6;
+  border: none;
+  padding: 12px;
+  border-radius: 8px;
+  color: white;
+  font-weight: bold;
+  cursor: pointer;
+  margin-top: 10px;
+  width: 100%;
+}
+input {
+  width: 100%;
+  padding: 10px;
+  margin-top: 10px;
+  border-radius: 8px;
+  border: none;
+}
+#loading { display: none; margin-top: 20px; }
+.spinner {
+  border: 4px solid #334155;
+  border-top: 4px solid #3b82f6;
+  border-radius: 50%;
+  width: 30px;
+  height: 30px;
+  margin: 0 auto;
+  animation: spin 1s linear infinite;
+}
+@keyframes spin { 100% { transform: rotate(360deg); } }
+#result { margin-top: 20px; font-weight: bold; }
+</style>
+</head>
+
+<body>
+<div class="container">
+  <h1>Platform Seç</h1>
+
+  <button onclick="showMail()">Mail</button>
+
+  <div id="form" style="display:none;">
+    <input id="keyInput" placeholder="Key gir">
+    <button onclick="getCode()">Kodu Al</button>
+  </div>
+
+  <div id="loading">
+    <div class="spinner"></div>
+    <p>Kod aranıyor...</p>
+  </div>
+
+  <div id="result"></div>
+</div>
+
+<script>
+function showMail() {
+  document.getElementById("form").style.display = "block";
+}
+
+async function getCode() {
+  const key = document.getElementById("keyInput").value.trim();
+  const result = document.getElementById("result");
+  const loading = document.getElementById("loading");
+
+  if (!key) {
+    result.innerText = "Key gir";
+    return;
+  }
+
+  result.innerText = "";
+  loading.style.display = "block";
+
+  try {
+    const res = await fetch("/get-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key })
+    });
+
+    const data = await res.json();
+    loading.style.display = "none";
+
+    if (data.code) result.innerText = "Kodunuz: " + data.code;
+    else result.innerText = data.message;
+
+  } catch (err) {
+    loading.style.display = "none";
+    result.innerText = "Sunucu hatası";
+  }
+}
+</script>
+</body>
+</html>
