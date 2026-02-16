@@ -29,10 +29,12 @@ button:hover { background: #2563eb; }
   border-radius: 12px;
   margin-top: 20px;
 }
-.key-item {
-  display: flex;
-  justify-content: space-between;
+.key-item,
+.admin-item {
+  display: grid;
+  grid-template-columns: 1.5fr 1fr 1fr auto;
   align-items: center;
+  gap: 10px;
   background: #334155;
   padding: 12px;
   border-radius: 8px;
@@ -40,6 +42,25 @@ button:hover { background: #2563eb; }
 }
 .used { color: #ef4444; font-weight: bold; }
 .unused { color: #22c55e; font-weight: bold; }
+.form-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+input[type="number"], input[type="password"] {
+  background: #0f172a;
+  border: 1px solid #475569;
+  color: white;
+  border-radius: 8px;
+  padding: 10px;
+}
+.small-btn {
+  padding: 8px 12px;
+}
+.state-pill {
+  font-weight: bold;
+}
 </style>
 </head>
 
@@ -47,40 +68,95 @@ button:hover { background: #2563eb; }
 
 <h1>Admin Panel</h1>
 
-<button onclick="createKey()">Yeni Key Oluştur</button>
-
 <div class="container">
+  <div class="form-row">
+    <label for="durationMinutes">Süre (dakika)</label>
+    <input id="durationMinutes" type="number" min="5" max="43200" value="60" />
+    <button onclick="createKey()">Yeni Key Oluştur</button>
+  </div>
+
   <h2>Key Listesi</h2>
   <div id="keyList"></div>
 </div>
 
+<div class="container">
+  <div class="form-row">
+    <label for="superToken">Super Token</label>
+    <input id="superToken" type="password" placeholder="x-super-token" />
+    <button class="small-btn" onclick="loadAdmins()">Adminleri Yükle</button>
+  </div>
+  <h2>Admins</h2>
+  <div id="adminList"></div>
+</div>
+
 <script>
+let keyCache = [];
+
+function showAlert(message) {
+  window.alert(message);
+}
+
+function formatRemainingText(item) {
+  if (item.remainingText) return item.remainingText;
+
+  const expiresAt = item.expiresAt
+    ? new Date(item.expiresAt)
+    : new Date(new Date(item.createdAt).getTime() + ((item.durationSeconds || 3600) * 1000));
+
+  const ms = expiresAt.getTime() - Date.now();
+  if (ms <= 0) return "Expired";
+
+  const hours = Math.floor(ms / (1000 * 60 * 60));
+  const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+  return `${hours}h ${minutes}m left`;
+}
+
+function renderKeys(data) {
+  const list = document.getElementById("keyList");
+  list.innerHTML = "";
+
+  data.forEach(k => {
+    const active = k.usesLeft > 0;
+    const remaining = formatRemainingText(k);
+
+    list.innerHTML += `
+      <div class="key-item">
+        <div>${k.key}</div>
+        <div>
+          <span class="${active ? 'unused' : 'used'}">
+            ${active ? `Aktif (${k.usesLeft} hak)` : "Bitti"}
+          </span>
+        </div>
+        <div><strong>Remaining:</strong> ${remaining}</div>
+        <button onclick="deleteKey('${k._id}')">Sil</button>
+      </div>
+    `;
+  });
+}
+
 async function createKey() {
-  await fetch("/admin/create-key", { method: "POST" });
+  const durationMinutes = Number(document.getElementById("durationMinutes").value || 60);
+  const res = await fetch("/admin/create-key", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ durationMinutes })
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    showAlert(err.error || "Key oluşturulamadı");
+    return;
+  }
+
+  showAlert("Key oluşturuldu");
   loadKeys();
 }
 
 async function loadKeys() {
   const res = await fetch("/admin/keys");
   const data = await res.json();
-
-  const list = document.getElementById("keyList");
-  list.innerHTML = "";
-
-  data.forEach(k => {
-    const active = k.usesLeft > 0;
-    list.innerHTML += `
-      <div class="key-item">
-        <div>
-          ${k.key} -
-          <span class="${active ? 'unused' : 'used'}">
-            ${active ? `Aktif (${k.usesLeft} hak)` : "Bitti"}
-          </span>
-        </div>
-        <button onclick="deleteKey('${k._id}')">Sil</button>
-      </div>
-    `;
-  });
+  keyCache = data;
+  renderKeys(keyCache);
 }
 
 async function deleteKey(id) {
@@ -88,7 +164,64 @@ async function deleteKey(id) {
   loadKeys();
 }
 
+function refreshRemainingFromCache() {
+  if (!keyCache.length) return;
+  renderKeys(keyCache);
+}
+
+function superHeaders() {
+  return {
+    "Content-Type": "application/json",
+    "x-super-token": document.getElementById("superToken").value.trim()
+  };
+}
+
+async function loadAdmins() {
+  const res = await fetch("/api/super/admins", { headers: superHeaders() });
+  const list = document.getElementById("adminList");
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    list.innerHTML = "";
+    showAlert(err.error || "Admin listesi alınamadı");
+    return;
+  }
+
+  const admins = await res.json();
+  list.innerHTML = "";
+
+  admins.forEach(a => {
+    list.innerHTML += `
+      <div class="admin-item">
+        <div>${a.username}</div>
+        <div class="state-pill ${a.suspended ? 'used' : 'unused'}">${a.suspended ? 'Suspended' : 'Active'}</div>
+        <div>${new Date(a.updatedAt || a.createdAt).toLocaleString()}</div>
+        <button class="small-btn" onclick="toggleSuspend('${a._id}', ${!a.suspended})">${a.suspended ? 'Unsuspend' : 'Suspend'}</button>
+      </div>
+    `;
+  });
+}
+
+async function toggleSuspend(id, suspended) {
+  const res = await fetch(`/api/super/admins/${id}/suspend`, {
+    method: "POST",
+    headers: superHeaders(),
+    body: JSON.stringify({ suspended })
+  });
+
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    showAlert(payload.error || "Suspend işlemi başarısız");
+    return;
+  }
+
+  showAlert(payload.message || "Güncellendi");
+  loadAdmins();
+}
+
 loadKeys();
+setInterval(loadKeys, 30000);
+setInterval(refreshRemainingFromCache, 30000);
 </script>
 
 </body>
