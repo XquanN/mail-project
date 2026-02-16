@@ -13,6 +13,11 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+const DEFAULT_KEY_DURATION_SECONDS = Number(process.env.DEFAULT_KEY_DURATION_SECONDS || 60 * 60);
+const MIN_KEY_DURATION_SECONDS = 5 * 60;
+const MAX_KEY_DURATION_SECONDS = 30 * 24 * 60 * 60;
+const SUPER_TOKEN = process.env.SUPER_TOKEN || "dev-super-token";
+
 /* =============================
    MongoDB
 ============================= */
@@ -27,9 +32,24 @@ mongoose
 const keySchema = new mongoose.Schema({
   key: { type: String, required: true, unique: true },
   usesLeft: { type: Number, default: 2 },
+  durationSeconds: { type: Number, min: MIN_KEY_DURATION_SECONDS, max: MAX_KEY_DURATION_SECONDS },
+  expiresAt: { type: Date },
   createdAt: { type: Date, default: Date.now },
 });
 const Key = mongoose.model("Key", keySchema);
+
+/* =============================
+   Admin Model
+============================= */
+const adminSchema = new mongoose.Schema(
+  {
+    username: { type: String, required: true, unique: true, trim: true },
+    password: { type: String, required: true },
+    suspended: { type: Boolean, default: false },
+  },
+  { timestamps: true }
+);
+const Admin = mongoose.models.Admin || mongoose.model("Admin", adminSchema);
 
 /* =============================
    IMAP Config
@@ -61,6 +81,56 @@ function generate12DigitKey() {
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+function normalizeDurationSeconds(rawMinutes) {
+  const minutes = Number(rawMinutes);
+  if (!Number.isFinite(minutes)) return null;
+  const duration = Math.round(minutes * 60);
+  if (duration < MIN_KEY_DURATION_SECONDS || duration > MAX_KEY_DURATION_SECONDS) return null;
+  return duration;
+}
+
+function getKeyTiming(keyDoc) {
+  const createdAt = keyDoc.createdAt ? new Date(keyDoc.createdAt) : new Date();
+  const durationSeconds =
+    Number(keyDoc.durationSeconds) > 0 ? Number(keyDoc.durationSeconds) : DEFAULT_KEY_DURATION_SECONDS;
+  const expiresAt = keyDoc.expiresAt
+    ? new Date(keyDoc.expiresAt)
+    : new Date(createdAt.getTime() + durationSeconds * 1000);
+
+  const remainingMs = expiresAt.getTime() - Date.now();
+  const expired = remainingMs <= 0;
+
+  return {
+    durationSeconds,
+    expiresAt,
+    remainingSeconds: expired ? 0 : Math.floor(remainingMs / 1000),
+    remainingText: expired
+      ? "Expired"
+      : `${Math.floor(remainingMs / (1000 * 60 * 60))}h ${Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60))}m left`,
+  };
+}
+
+function serializeKey(keyDoc) {
+  const obj = keyDoc.toObject ? keyDoc.toObject() : { ...keyDoc };
+  const timing = getKeyTiming(obj);
+
+  return {
+    ...obj,
+    durationSeconds: timing.durationSeconds,
+    expiresAt: timing.expiresAt,
+    remainingSeconds: timing.remainingSeconds,
+    remainingText: timing.remainingText,
+  };
+}
+
+function superAuth(req, res, next) {
+  const token = req.headers["x-super-token"] || req.headers.authorization?.replace(/^Bearer\s+/i, "");
+  if (!token || token !== SUPER_TOKEN) {
+    return res.status(401).json({ error: "Unauthorized super admin" });
+  }
+  next();
 }
 
 // 628018 veya "6 2 8 0 1 8" hatta "6-2-8-0-1-8" / araya enter falan girse de yakala
@@ -104,14 +174,30 @@ app.get("/", (req, res) => {
 ============================= */
 app.post("/admin/create-key", async (req, res) => {
   try {
+    const durationSeconds = normalizeDurationSeconds(req.body?.durationMinutes ?? 60);
+    if (!durationSeconds) {
+      return res.status(400).json({ error: "durationMinutes must be between 5 and 43200" });
+    }
+
     let newKey = generate12DigitKey();
     for (let i = 0; i < 5; i++) {
       const exists = await Key.findOne({ key: newKey });
       if (!exists) break;
       newKey = generate12DigitKey();
     }
-    const doc = await Key.create({ key: newKey, usesLeft: 2 });
-    res.json(doc);
+
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + durationSeconds * 1000);
+
+    const doc = await Key.create({
+      key: newKey,
+      usesLeft: 2,
+      createdAt,
+      durationSeconds,
+      expiresAt,
+    });
+
+    res.json(serializeKey(doc));
   } catch (err) {
     console.log("ADMIN create-key hata:", err);
     res.status(500).json({ error: "Key üretilemedi" });
@@ -120,12 +206,52 @@ app.post("/admin/create-key", async (req, res) => {
 
 app.get("/admin/keys", async (req, res) => {
   const keys = await Key.find().sort({ createdAt: -1 });
-  res.json(keys);
+  res.json(keys.map(serializeKey));
 });
 
 app.delete("/admin/delete/:id", async (req, res) => {
   await Key.findByIdAndDelete(req.params.id);
   res.json({ message: "Silindi" });
+});
+
+app.get("/api/super/admins", superAuth, async (req, res) => {
+  const admins = await Admin.find().sort({ createdAt: -1 }).select("username suspended createdAt updatedAt");
+  res.json(admins);
+});
+
+app.post("/api/super/admins/:id/suspend", superAuth, async (req, res) => {
+  const { suspended } = req.body || {};
+  if (typeof suspended !== "boolean") {
+    return res.status(400).json({ error: "suspended must be boolean" });
+  }
+
+  const admin = await Admin.findByIdAndUpdate(
+    req.params.id,
+    { suspended },
+    { new: true, runValidators: true }
+  ).select("username suspended createdAt updatedAt");
+
+  if (!admin) return res.status(404).json({ error: "Admin not found" });
+
+  return res.json({ message: suspended ? "Admin suspended" : "Admin unsuspended", admin });
+});
+
+app.post("/api/admin/login", async (req, res) => {
+  const username = String(req.body?.username || "").trim();
+  const password = String(req.body?.password || "");
+  if (!username || !password) {
+    return res.status(400).json({ error: "username and password are required" });
+  }
+
+  const admin = await Admin.findOne({ username });
+  if (!admin || admin.password !== password) {
+    return res.status(401).json({ error: "Invalid credentials" });
+  }
+  if (admin.suspended) {
+    return res.status(403).json({ error: "Admin account is suspended" });
+  }
+
+  return res.json({ message: "Login successful", adminId: admin._id });
 });
 
 /* =============================
@@ -198,6 +324,11 @@ app.post("/get-code", async (req, res) => {
   const keyDoc = await Key.findOne({ key: userKey });
   if (!keyDoc) return res.json({ message: "Geçersiz key" });
 
+  if (getKeyTiming(keyDoc).remainingText === "Expired") {
+    await Key.deleteOne({ _id: keyDoc._id });
+    return res.json({ message: "Key süresi dolmuş" });
+  }
+
   if (keyDoc.usesLeft <= 0) {
     await Key.deleteOne({ _id: keyDoc._id });
     return res.json({ message: "Key kullanım hakkı bitmiş" });
@@ -233,7 +364,7 @@ app.post("/get-code", async (req, res) => {
         if (uid && uid > lastSeenUid) lastSeenUid = uid;
 
         const textPart = msg.parts?.find((p) => p.which === "TEXT")?.body;
-        const text = typeof textPart === "string" ? textPart : (textPart?.toString?.() || "");
+        const text = typeof textPart === "string" ? textPart : textPart?.toString?.() || "";
 
         let code = extract6DigitCode(text);
         if (code) {
